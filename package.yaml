@@ -1,0 +1,57 @@
+name:                jit-nbe
+version:             0.1.0.0
+description:         Combine JIT compilation with normalization-by-evaluation (NBE)
+license:             BSD3
+author:              Nick Chapman
+maintainer:          nic@amadido.co.uk
+github:              https://github.com/Nick-Chapman/jit-nbe.git
+
+extra-source-files:
+- README.md
+
+dependencies:
+- ansi-terminal
+- array
+- base >= 4.7 && < 5
+- bytestring
+- clock
+- containers
+- containers
+- extra
+- haskeline
+- mtl
+- text
+- time
+- transformers
+- word8
+
+default-extensions:
+- BangPatterns
+- DuplicateRecordFields
+- FlexibleContexts
+- GADTs
+- GeneralizedNewtypeDeriving
+- InstanceSigs
+- LambdaCase
+- MultiWayIf
+- NamedFieldPuns
+- NondecreasingIndentation
+- NumericUnderscores
+- RankNTypes
+- ScopedTypeVariables
+- TypeApplications
+- TypeFamilies
+- UndecidableInstances
+
+ghc-options:
+- -Werror
+- -Wall
+- -Wno-name-shadowing
+
+library:
+  source-dirs: src
+
+executables:
+  main.exe:
+    main:                app/main.hs
+    dependencies:        jit-nbe
