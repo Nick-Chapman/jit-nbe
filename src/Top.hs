@@ -6,8 +6,15 @@ import qualified Data.Map.Strict as Map
 
 import Control.Monad (ap,liftM,(>=>))
 
+import qualified Bf
+
 main :: IO ()
 main = do
+  Bf.main
+
+
+_main :: IO ()
+_main = do
   putStrLn "*jit-nbe*"
   let p0 = Map.empty
 

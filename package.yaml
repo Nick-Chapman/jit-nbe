@@ -17,6 +17,7 @@ dependencies:
 - clock
 - containers
 - containers
+- data-ascii
 - extra
 - haskeline
 - mtl
