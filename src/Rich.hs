@@ -31,6 +31,8 @@ main = do
         where
           x = mkName"x"
 
+  -- TODO: drive evaluation/normalization of remaining expression forms with tests
+
   let wrapContext e = App (App e inc) (Lit 5)
         where inc = Lam x (Add (Var x) (Lit 1))
               x = mkName"x"
@@ -95,14 +97,14 @@ data Exp
   | App Exp Exp
   | Con Tag [Exp]
   | Case Exp [Abstraction]
-  | Letrec [(Name,Abstraction)] Exp
+  | Letrec [(Name,Abstraction)] Exp -- TODO: this abstraction always has 1 name ?!
   | Input Name Exp
   | Output Exp Exp
 
 newtype Byte = Byte Word8
   deriving (Num)
 
-data Abstraction = Abstraction [Name] Exp
+data Abstraction = Abstraction [Name] Exp -- TODO: rename Alternative, and use only in Case
   deriving Show
 
 ----------------------------------------------------------------------
@@ -203,15 +205,15 @@ eval p = \case
     unpackData v1 $ \(Tag n) vs -> do
       let Abstraction xs e2 = branches !! n
       eval (extend xs vs p) e2
-  Letrec bindings body -> do
+  Letrec bindings body -> do -- TODO: not tested yet
     let names = [ x | (x,_) <- bindings ]
     let vs = [ VClosure p' abs | (_,abs) <- bindings ] -- cyclic values/env
         p' = extend names vs p
     eval p' body
-  Input x body -> do
+  Input x body -> do -- TODO: not tested yet
     byte <- inputByte
     eval (extend [x] [VByte byte] p) body
-  Output e1 e2 -> do
+  Output e1 e2 -> do -- TODO: not tested yet
     v1 <- eval p e1
     outputByte (getByte "output" v1)
     eval p e2
@@ -234,7 +236,7 @@ unpackData v k = case v of VData tag vs -> k tag vs; _ -> error (show ("unpackDa
 
 data Value
   = VByte Byte
-  | VClosure Env Abstraction
+  | VClosure Env Abstraction -- TODO: should this be an Abstraction here
   | VData Tag [Value]
   deriving Show
 
@@ -285,14 +287,14 @@ reflect q = \case
     svApply svFunc svArg
   Con tag es -> do
     vs <- mapM (reflect q) es
-    ns <- mapM reify vs
-    pure (Syntax (Con tag ns))
+    ns <- mapM reify vs -- DONT reify
+    pure (Syntax (Con tag ns)) -- TODO: need special semantic form here
   Case scrut branches -> do
     scrut <- norm q scrut
-    branches <- mapM (normAbstraction q) branches
-    pure (Syntax (Case scrut branches))
+    branches <- mapM (normAbstraction q) branches -- dont norm (just reify)
+    pure (Syntax (Case scrut branches)) -- TODO: need special semantic form here?
   Letrec bindings body -> do
-    undefined bindings body
+    undefined bindings body -- TODO: explore unfold
   Input x body -> do
     undefined x body
   Output e1 e2 -> do
