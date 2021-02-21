@@ -6,11 +6,13 @@ import qualified Data.Map.Strict as Map
 
 import Control.Monad (ap,liftM,(>=>))
 
-import qualified Bf
+--import qualified Bf
+import qualified Rich
 
 main :: IO ()
 main = do
-  Bf.main
+  --Bf.main
+  Rich.main
 
 
 _main :: IO ()
