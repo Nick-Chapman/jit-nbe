@@ -2,7 +2,7 @@
 -- Think about evaluation (and later normalization) of a richer expression language
 -- including: multi-app/lam, data-constructors + case-matching, mutual-fixpoints, and IO
 
-module Rich (main,eval,Exp(..),eFix,eLet,eTrue,eFalse,eIf,eNil,eCons,eCaseList) where
+module Rich (main,eval,Exp(..),eFix,eLet,eTrue,eFalse,eIf,eNil,eCons,eCaseList,eUnit) where
 
 import Data.Map (Map)
 import Data.Word8 (Word8)
@@ -17,7 +17,7 @@ main = do
   putStrLn "*rich*"
   let p0 = Map.empty
 
-  let prog = Lam inc (with3 (\n3 -> App id (Lam x (Add (App (App id id) (Add n3 (Lit 42))) (App dub (App (Var inc) (Var x)))))))
+  let _prog = Lam inc (with3 (\n3 -> App id (Lam x (Add (App (App id id) (Add n3 (Lit 42))) (App dub (App (Var inc) (Var x)))))))
         where
           --with3 f = App (Lam y (f (Var y))) (Lit 3) where y = mkName"y"
           with3 f = eLet y (Lit 3) (f (Var y)) where y = mkName"y"
@@ -33,19 +33,42 @@ main = do
 
   -- TODO: drive evaluation/normalization of remaining expression forms with tests
 
-  let wrapContext e = App (App e inc) (Lit 5)
-        where inc = Lam x (Add (Var x) (Lit 1))
+  let _prog = App (Lam x (Output (Add (Lit 60) (Var x)) eUnit)) (Lit 5)
+        where --inc = Lam x (Add (Var x) (Lit 1))
               x = mkName"x"
 
+  let _prog = Input x (Input y (Output (Var x) (Output (Var y) eUnit)))
+             where x = mkName"x"
+                   y = mkName"y"
+
+  let _prog = eIf eTrue (Lit 12,Lit 34)
+
+  let prog = Case (Con (Tag 0) [Lit 12, Lit 34]) [Alternative [x,y] (Add (Var x) (Var y))]
+        where x = mkName"x"
+              y = mkName"y"
+
+  let _prog = App (App twice twice) inc
+        where twice = Lam f (Lam x (App (Var f) (App (Var f) (Var x))))
+              inc = Lam x (Add (Var x) (Lit 1))
+              f = mkName"f"
+              x = mkName"x"
+
+  {-let wrapContext e = App (App e inc) (Lit 5)
+        where inc = Lam x (Add (Var x) (Lit 1))
+              x = mkName"x"-}
+
+  let wrapContext e = e
+  --let wrapContext e = App e (Lit 100)
+
   putStrLn ("prog:\n"++ show prog)
-  value0 <- eval p0 (wrapContext prog)
-  print ("res0:",value0)
+  res0 <- eval p0 (wrapContext prog)
+  print ("res0:",res0)
 
   let norm = normalize prog
   putStrLn ("norm:\n"++ show norm)
 
-  value1 <- eval p0 (wrapContext norm)
-  print ("res1:",value1)
+  res1 <- eval p0 (wrapContext norm)
+  print ("res1:",res1)
 
   pure ()
 
@@ -53,11 +76,11 @@ main = do
 ------------------------------------------------------------------------
 -- derived constructors
 
-eFix :: Name -> Abstraction -> Exp
-eFix f abs = Letrec [(f,abs)] (Var f)
+eFix :: Name -> Name -> Exp -> Exp
+eFix f x body = Letrec [(f,(x,body))] (Var f)
 
 eLet :: Name -> Exp -> Exp -> Exp
-eLet x rhs body = Case (Con (Tag 0) [rhs]) [Abstraction [x] body]
+eLet x rhs body = Case (Con (Tag 0) [rhs]) [Alternative [x] body]
 
 eTrue :: Exp
 eTrue = Con (Tag 0) []
@@ -67,7 +90,7 @@ eFalse = Con (Tag 1) []
 
 eIf :: Exp -> (Exp,Exp) -> Exp
 eIf cond (thenBranch,elseBranch) =
-  Case cond [Abstraction [] thenBranch, Abstraction [] elseBranch]
+  Case cond [Alternative [] thenBranch, Alternative [] elseBranch]
 
 eNil :: Exp
 eNil = Con (Tag 0) []
@@ -77,7 +100,10 @@ eCons x xs = Con (Tag 1) [x,xs]
 
 eCaseList :: Exp -> (Exp, (Name,Name,Exp)) -> Exp
 eCaseList scrut (nilBranch,(x,xs,consBranch)) =
-  Case scrut [Abstraction [] nilBranch, Abstraction [x,xs] consBranch]
+  Case scrut [Alternative [] nilBranch, Alternative [x,xs] consBranch]
+
+eUnit :: Exp
+eUnit = Con (Tag 0) []
 
 
 ----------------------------------------------------------------------
@@ -96,15 +122,15 @@ data Exp
   | Lam Name Exp
   | App Exp Exp
   | Con Tag [Exp]
-  | Case Exp [Abstraction]
-  | Letrec [(Name,Abstraction)] Exp -- TODO: this abstraction always has 1 name ?!
+  | Case Exp [Alternative]
+  | Letrec [(Name,(Name,Exp))] Exp
   | Input Name Exp
   | Output Exp Exp
 
 newtype Byte = Byte Word8
   deriving (Num)
 
-data Abstraction = Abstraction [Name] Exp -- TODO: rename Alternative, and use only in Case
+data Alternative = Alternative [Name] Exp
   deriving Show
 
 ----------------------------------------------------------------------
@@ -122,22 +148,24 @@ pretty = \case
   App func arg -> paren (foldl jux [] (map pretty [func,arg]))
   Lam x body -> paren (hangIndented ("\\" ++ show x ++ ".") (pretty body))
   Con tag es -> do
-    bracket (show tag++"{") "}" (seperated "," [ pretty e | e <- es ])
+    bracket (show tag++"[") "]" (seperated "," [ pretty e | e <- es ])
   Case scrut branches -> do
     bracket "case " " of" (pretty scrut)
-    ++ indent (concat [ prettyAbstraction abs | abs  <- branches ])
+    ++ indent (concat [ prettyAlternative (Tag n) abs | (n,abs) <- zip [0..] branches ])
   Letrec bindings body -> do
     undefined bindings body
   Input x body -> do
-    undefined x body
+    ["let " ++ show x ++ " = input() in"] ++ pretty body
   Output e1 e2 -> do
-    undefined e1 e2
+    bracket "output(" ");" (pretty e1)
+    ++ pretty e2
 
-prettyAbstraction :: Abstraction -> Lines
-prettyAbstraction (Abstraction xs body) =
-  hangIndented ("\\" ++ show xs ++ " -> ") (pretty body)
+prettyAlternative :: Tag -> Alternative -> Lines
+prettyAlternative tag (Alternative xs body) = do
+  let lhs = show tag ++ show xs
+  hangIndented (lhs ++ " ->") (pretty body)
 
-instance Show Tag where show (Tag n) = "tag-" ++ show n
+instance Show Tag where show (Tag n) = "Tag-" ++ show n
 instance Show Name where show (Name s) = s
 instance Show Byte where show (Byte w) = show w
 
@@ -149,7 +177,7 @@ bracket left right = onHead (left ++) . onTail (++ right)
 
 seperated :: String -> [Lines] -> Lines
 seperated sep = \case
-  [] -> []
+  [] -> [""]
   [x] -> x
   x:xs -> beside sep x (seperated sep xs)
 
@@ -191,29 +219,29 @@ eval p = \case
   Var x -> do
     pure $ maybe (error $ "eval,lookup:"++show x) id (Map.lookup x p)
   Lam x body -> do
-    pure $ VClosure p (Abstraction [x] body)
+    pure $ VClosure p x body
   App e1 e2 -> do
     v2 <- eval p e2
     v1 <- eval p e1
-    enterClosure v1 $ \p (Abstraction xs e) ->
-      eval (extend xs [v2] p) e
+    enterClosure v1 $ \p x body ->
+      eval (extend [x] [v2] p) body
   Con tag es -> do
     vs <- mapM (eval p) es
     pure (VData tag vs)
   Case e1 branches -> do
     v1 <- eval p e1
     unpackData v1 $ \(Tag n) vs -> do
-      let Abstraction xs e2 = branches !! n
+      let Alternative xs e2 = branches !! n
       eval (extend xs vs p) e2
   Letrec bindings body -> do -- TODO: not tested yet
-    let names = [ x | (x,_) <- bindings ]
-    let vs = [ VClosure p' abs | (_,abs) <- bindings ] -- cyclic values/env
+    let names = [ f | (f,_) <- bindings ]
+    let vs = [ VClosure p' x e | (_,(x,e)) <- bindings ] -- cyclic values/env
         p' = extend names vs p
     eval p' body
-  Input x body -> do -- TODO: not tested yet
+  Input x body -> do
     byte <- inputByte
     eval (extend [x] [VByte byte] p) body
-  Output e1 e2 -> do -- TODO: not tested yet
+  Output e1 e2 -> do
     v1 <- eval p e1
     outputByte (getByte "output" v1)
     eval p e2
@@ -228,15 +256,15 @@ vAdd v1 v2 = VByte (getByte "add/1" v1 + getByte "add/2" v2)
 getByte :: String -> Value -> Byte
 getByte tag = \case VByte i -> i; v -> error (show (tag,v))
 
-enterClosure :: Value -> (Env -> Abstraction -> r) -> r
-enterClosure v k = case v of VClosure p abs -> k p abs; _ -> error (show ("enterClosure",v))
+enterClosure :: Value -> (Env -> Name -> Exp -> r) -> r
+enterClosure v k = case v of VClosure p x e -> k p x e; _ -> error (show ("enterClosure",v))
 
 unpackData :: Value -> (Tag -> [Value] -> r) -> r
 unpackData v k = case v of VData tag vs -> k tag vs; _ -> error (show ("unpackData",v))
 
 data Value
   = VByte Byte
-  | VClosure Env Abstraction -- TODO: should this be an Abstraction here
+  | VClosure Env Name Exp
   | VData Tag [Value]
   deriving Show
 
@@ -254,7 +282,9 @@ inputByte = do
         Nothing -> error ("inputByte, non ascii char: " ++ show char)
 
 outputByte :: Byte -> IO ()
-outputByte (Byte w8) = putChar (Ascii.toChar w8)
+outputByte (Byte w8) = do
+  --putChar (Ascii.toChar w8)
+  print ("outputByte",Ascii.toChar w8)
 
 ----------------------------------------------------------------------
 -- normalization
@@ -268,18 +298,18 @@ norm p = reflect p >=> reify
 
 type SemEnv = Map Name SemVal
 
-reflect :: SemEnv -> Exp -> M SemVal
+reflect :: SemEnv -> Exp -> M Reflected
 reflect q = \case
   Lit b -> do
-    pure (Constant b)
+    pure $ Semantic (Constant b)
   Add e1 e2 -> do
     sv1 <- reflect q e1
     sv2 <- reflect q e2
     pure $ svAdd sv1 sv2
   Var x -> do
-    pure $ maybe (error $ "reflect,lookup:"++show x) id (Map.lookup x q)
+    pure $ Semantic (maybe (error $ "reflect,lookup:"++show x) id (Map.lookup x q))
   Lam x body -> do
-    pure $ Macro (unName x) $ \arg -> do
+    pure $ Semantic $ Macro (unName x) $ \arg -> do
       reflect (extend [x] [arg] q) body
   App eFunc eArg -> do
     svArg <- reflect q eArg
@@ -288,36 +318,56 @@ reflect q = \case
   Con tag es -> do
     vs <- mapM (reflect q) es
     ns <- mapM reify vs -- DONT reify
-    pure (Syntax (Con tag ns)) -- TODO: need special semantic form here
+    pure (Syntactic (Con tag ns)) -- TODO: use need semantic form for data
   Case scrut branches -> do
+    -- TODO check special semantic form for data
     scrut <- norm q scrut
-    branches <- mapM (normAbstraction q) branches -- dont norm (just reify)
-    pure (Syntax (Case scrut branches)) -- TODO: need special semantic form here?
+    branches <- mapM (normAlternative q) branches -- dont norm (just reify)
+    pure (Syntactic (Case scrut branches)) -- TODO: need special semantic form here?
   Letrec bindings body -> do
     undefined bindings body -- TODO: explore unfold
-  Input x body -> do
-    undefined x body
+  Input x e -> do
+    withFresh x q $ \x q -> do
+      n <- norm q e
+      pure (Syntactic (Input x n))
   Output e1 e2 -> do
-    undefined e1 e2
+    n1 <- norm q e1
+    n2 <- norm q e2
+    pure (Syntactic (Output n1 n2))
 
 
-normAbstraction :: SemEnv -> Abstraction -> M Abstraction
-normAbstraction q (Abstraction xs e) = do
-  xs' <- mapM (Fresh . unName) xs
+normAlternative :: SemEnv -> Alternative -> M Alternative
+normAlternative q (Alternative xs e) = do
+  xs' <- mapM (Fresh . unName) xs -- TODO: use withFresh
   let q' = extend xs (map Named xs') q
   e <- norm q' e
-  pure $ Abstraction xs' e
+  pure $ Alternative xs' e
 
 
-data SemVal
-  = Syntax Exp
-  | Named Name
+withFresh :: Name -> SemEnv -> (Name -> SemEnv -> M r) -> M r
+withFresh x q k = do
+  x' <- (Fresh . unName) x
+  let q' = extend [x] [Named x'] q
+  k x' q'
+
+
+data Reflected
+  = Syntactic Exp
+  | Semantic SemVal
+
+data SemVal -- sharable semantic values
+  = Named Name
   | Constant Byte
-  | Macro String (SemVal -> M SemVal)
+  | Macro String (SemVal -> M Reflected)
+  -- TODO: vaiant for constructed data
 
-reify :: SemVal -> M Exp
+reify :: Reflected -> M Exp
 reify = \case
-  Syntax n -> pure n
+  Syntactic e -> pure e
+  Semantic s -> reifyS s
+
+reifyS :: SemVal -> M Exp
+reifyS = \case
   Named x -> pure $ Var x
   Constant i -> pure $ Lit i
   Macro tag f -> do
@@ -326,48 +376,51 @@ reify = \case
     return $ Lam x body
 
 
-svApply :: SemVal -> SemVal -> M SemVal
+svApply :: Reflected -> Reflected -> M Reflected -- TODO: inline at caller?
 svApply = \case
+  Syntactic func -> \arg -> do
+    arg <- reify arg
+    return $ Syntactic (App func arg)
+  Semantic s ->
+    svApplyS s
+
+svApplyS :: SemVal -> Reflected -> M Reflected
+svApplyS = \case
   Constant{} -> error "svApply,arg1,Constant"
   Named xf -> \arg -> do
     arg <- reify arg
-    return $ Syntax (App (Var xf) arg)
-  Syntax func -> \arg -> do
-    arg <- reify arg
-    return $ Syntax (App func arg)
-  Macro tag f -> \arg -> do
-    if duplicatable arg then f arg else do -- OPTIMIZATION HERE: beta/inlining!
-      x <- Fresh tag
-      arg <- reify arg
-      Wrap (eLet x arg) (f (Named x))
-
-duplicatable :: SemVal -> Bool
-duplicatable = \case
-  Constant{} -> True
-  Named{} -> True
-  Macro{} -> True
-  Syntax{} -> False
+    return $ Syntactic (App (Var xf) arg)
+  Macro tag func -> \case
+    Semantic arg -> func arg -- OPTIMIZATION HERE: beta/inlining!
+    Syntactic arg -> do
+      x <- Fresh tag -- TODO: share this freshening code
+      --arg <- reify (Syntactic arg)
+      Wrap (eLet x arg) (func (Named x))
 
 
-svAdd :: SemVal -> SemVal -> SemVal
+svAdd :: Reflected -> Reflected -> Reflected
 svAdd sv1 sv2 =
   case (maybeConstantByte sv1, maybeConstantByte sv2) of
     (Just i1,Just i2) ->
-      Constant (i1+i2) -- OPTIMIZATION HERE: constant folding!
+      Semantic (Constant (i1+i2)) -- OPTIMIZATION HERE: constant folding!
     _ ->
-      Syntax (Add (reifyByte sv1) (reifyByte sv2))
+      Syntactic (Add (reifyByte sv1) (reifyByte sv2))
 
-maybeConstantByte :: SemVal -> Maybe Byte
+maybeConstantByte :: Reflected -> Maybe Byte
 maybeConstantByte = \case
-  Constant i -> Just i
+  Semantic (Constant i) -> Just i
   _ -> Nothing
 
-reifyByte :: SemVal -> Exp
+reifyByte :: Reflected -> Exp
 reifyByte = \case
+  Syntactic e -> e
+  Semantic s -> reifyByteS s
+
+reifyByteS :: SemVal -> Exp
+reifyByteS = \case
   Macro{} -> error "reifyByte, Macro"
   Constant i -> Lit i
   Named x -> Var x
-  Syntax n -> n
 
 
 data M a where -- monad for normalizion: fresh-idents & continuation manipulation
