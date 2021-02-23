@@ -293,7 +293,7 @@ normalize :: Exp -> Exp
 normalize = runM . norm Map.empty
 
 norm :: SemEnv -> Exp -> M Exp
-norm p = reflect p >=> reify
+norm q = reflect q >=> reify
 
 
 type SemEnv = Map Name SemVal
@@ -315,15 +315,25 @@ reflect q = \case
     svArg <- reflect q eArg
     svFunc <- reflect q eFunc
     svApply svFunc svArg
+
   Con tag es -> do
-    vs <- mapM (reflect q) es
-    ns <- mapM reify vs -- DONT reify
-    pure (Syntactic (Con tag ns)) -- TODO: use need semantic form for data
+    vs <- mapM (reflect q >=> shareReflected) es
+    pure $ Semantic (Data tag vs)
+
   Case scrut branches -> do
-    -- TODO check special semantic form for data
-    scrut <- norm q scrut
-    branches <- mapM (normAlternative q) branches -- dont norm (just reify)
-    pure (Syntactic (Case scrut branches)) -- TODO: need special semantic form here?
+    scrutR <- reflect q scrut
+    case maybeConstantData scrutR of
+      Just (Tag n,vs) -> do
+        -- OPTIMIZATION HERE: branch selection!
+        let Alternative xs rhs = branches !! n
+        reflect (extend xs vs q) rhs
+      Nothing -> do
+        scrutN <- reify scrutR
+        -- TODO: duplicate continuation across branches
+        -- possible code explosion; but always good when just one branch (i.e. tuples)
+        branches <- mapM (normAlternative q) branches
+        pure (Syntactic (Case scrutN branches))
+
   Letrec bindings body -> do
     undefined bindings body -- TODO: explore unfold
   Input x e -> do
@@ -334,6 +344,15 @@ reflect q = \case
     n1 <- norm q e1
     n2 <- norm q e2
     pure (Syntactic (Output n1 n2))
+
+
+shareReflected :: Reflected -> M SemVal
+shareReflected = \case
+  Semantic sv -> pure sv
+  Syntactic exp -> do
+    undefined exp
+    --x <- Fresh "data"
+    --Wrap (eLet x exp) (pure (Named x))
 
 
 normAlternative :: SemEnv -> Alternative -> M Alternative
@@ -359,7 +378,8 @@ data SemVal -- sharable semantic values
   = Named Name
   | Constant Byte
   | Macro String (SemVal -> M Reflected)
-  -- TODO: vaiant for constructed data
+  | Data Tag [SemVal]
+
 
 reify :: Reflected -> M Exp
 reify = \case
@@ -374,7 +394,9 @@ reifyS = \case
     x <- Fresh tag
     body <- Reset (f (Named x) >>= reify)
     return $ Lam x body
-
+  Data tag vs -> do
+    es <- mapM reifyS vs
+    pure $ Con tag es
 
 svApply :: Reflected -> Reflected -> M Reflected -- TODO: inline at caller?
 svApply = \case
@@ -387,14 +409,14 @@ svApply = \case
 svApplyS :: SemVal -> Reflected -> M Reflected
 svApplyS = \case
   Constant{} -> error "svApply,arg1,Constant"
+  Data{} -> error "svApply,arg1,Data"
   Named xf -> \arg -> do
     arg <- reify arg
     return $ Syntactic (App (Var xf) arg)
   Macro tag func -> \case
     Semantic arg -> func arg -- OPTIMIZATION HERE: beta/inlining!
     Syntactic arg -> do
-      x <- Fresh tag -- TODO: share this freshening code
-      --arg <- reify (Syntactic arg)
+      x <- Fresh tag
       Wrap (eLet x arg) (func (Named x))
 
 
@@ -419,8 +441,16 @@ reifyByte = \case
 reifyByteS :: SemVal -> Exp
 reifyByteS = \case
   Macro{} -> error "reifyByte, Macro"
+  Data{} -> error "reifyByte, Data"
   Constant i -> Lit i
   Named x -> Var x
+
+
+maybeConstantData :: Reflected -> Maybe (Tag,[SemVal])
+maybeConstantData = \case
+  Semantic (Data tag svs) -> Just (tag,svs)
+  _ -> Nothing
+
 
 
 data M a where -- monad for normalizion: fresh-idents & continuation manipulation
