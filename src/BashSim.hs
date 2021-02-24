@@ -70,9 +70,16 @@ main = do
         , B_Invoke [ Redirect R 0 (RedirectFile (Path "words.rev")) ] BinCat
         ]
 
-  let _ = (b1,b2,b3,b4,b5)
+  let b6 = bseq
+        [ B_Empty
+        , B_Background
+          (B_Invoke [] (BinBash b1))
+        , B_Invoke swap1and2 (BinBash b1)
+        ]
 
-  let p :: OsProg = bash b5
+  let _ = (b1,b2,b3,b4,b5,b6)
+
+  let p :: OsProg = bash b6
   let fs0 = initFS
   _fs1 <- osim fs0 p
   --print _fs1
@@ -92,6 +99,7 @@ data BashProg
   = B_Empty
   | B_Invoke [Redirect] Exe
   | B_Seq BashProg BashProg
+  | B_Background BashProg
 
 data Redirect
   = Redirect Mode FDI RedirectTarget
@@ -157,10 +165,13 @@ bash = loop OS_Stop
       B_Invoke redirects exe -> do
         myInitialFdiMap $ \fm -> do
           evalRedirects fm redirects $ \env ->
-            OS_Invoke env (runX exe) k
+            OS_InvokeAndWait env (runX exe) k
 
       B_Seq p1 p2 ->
         loop (loop k p2) p1
+
+      B_Background prog ->
+        OS_Spawn (bash prog) k
 
 
 -- redirection in bash...
@@ -199,7 +210,8 @@ evalRedirectTarget fm mode target k = case target of
 
 data OsProg
   = OS_Stop
-  | OS_Invoke OsProgEnv OsProg OsProg
+  | OS_InvokeAndWait OsProgEnv OsProg OsProg -- TODO: remove
+  | OS_Spawn OsProg OsProg
   | OS_GetEnv (OsProgEnv -> OsProg)
   | OS_OpenFile Mode Path (FD -> OsProg)
   | OS_Read FD (Maybe String -> OsProg)
@@ -224,7 +236,11 @@ data OsState = OsState
   , callers :: [(OsProgEnv,OsProg)] -- TODO: multiple processes!
   , consoleInputRemaining :: [String]
   , fs :: FileSystem
+  , procs :: [Process]
   }
+
+data Process = Process { env :: OsProgEnv, prog :: OsProg }
+
 
 type FdMap = Map FD EndPoint
 data EndPoint -- TODO: pipes
@@ -248,10 +264,21 @@ osim fs0 = loop initProgEnv initState
       , callers = []
       , consoleInputRemaining = ["the","user","types","something"]
       , fs = fs0
+      , procs = []
       }
 
+
     loop :: OsProgEnv -> OsState -> OsProg -> IO FileSystem
-    loop env state = \case
+    loop env state prog = do
+      let OsState{procs} = state
+      case procs of
+        [] -> loop' env state prog
+        Process{env=env',prog=prog'}:procs -> do
+          let state' = state { procs = procs ++ [Process {env,prog}] } -- round robin
+          loop' env' state' prog'
+
+    loop' :: OsProgEnv -> OsState -> OsProg -> IO FileSystem
+    loop' env state = \case
       OS_Stop -> do
         let OsState{callers} = state
         case callers of
@@ -260,9 +287,14 @@ osim fs0 = loop initProgEnv initState
             let state' = state { callers }
             loop env' state' prog
 
-      OS_Invoke env' prog suspended -> do
+      OS_InvokeAndWait env' prog suspended -> do
         let state' = state { callers = (env,suspended) : callers state }
         loop env' state' prog
+
+      OS_Spawn spawned continue -> do
+        let OsState{procs} = state
+        let state' = state { procs = procs ++ [Process {env, prog = spawned}] }
+        loop env state' continue
 
       OS_GetEnv f -> do
         loop env state (f env)
