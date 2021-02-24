@@ -6,6 +6,8 @@ hmm. This kind of morphed into a playground for _partial evaluation_ & the _Futa
 
 And then _Optimal Evaluation_.
 
+And now a simulation of redirection in bash.
+
 
 ## Futamura
 

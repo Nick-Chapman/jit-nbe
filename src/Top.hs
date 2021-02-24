@@ -7,12 +7,14 @@ import qualified Data.Map.Strict as Map
 import Control.Monad (ap,liftM,(>=>))
 
 --import qualified Bf
-import qualified Rich
+--import qualified Rich
+import qualified BashSim
 
 main :: IO ()
 main = do
   --Bf.main
-  Rich.main
+  --Rich.main
+  BashSim.main
 
 
 _main :: IO ()
