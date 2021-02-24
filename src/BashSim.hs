@@ -7,6 +7,24 @@ module BashSim(main) where
 import Data.Map (Map)
 import qualified Data.Map.Strict as Map
 
+{-
+Still todo:  (in this rough order)
+- DONE: input file descriptors, primary stdin from Console
+- redirects to/from file: need file system in OS sim
+- create/remove file (link/unlink into file-system); append to file
+- spawned invocation (i.e. bash `&`): needs processes in OS sim (currently the OS sim is single threaded; bit of a useless OS)
+- pipes as a kind of ephemeral file, (and so `|` in bash)
+
+- bash parser
+- real interaction
+- persistance to real file-system
+- find executables as files in the file system
+- more basic executables: cat (can write that in bash), ls, ps, grep, rev, sed
+- command line args
+- process exit status
+- bash command substitution
+-}
+
 main :: IO ()
 main = do
   putStrLn "*bash-sim*"
@@ -36,7 +54,12 @@ main = do
         , B_Invoke swap1and2 (BinBash b1)
         ]
 
-  let p :: OsProg = bash b2
+  let b3 = bseq
+        [ B_Invoke [] BinRev
+        ]
+
+  let _ = (b1,b2,b3)
+  let p :: OsProg = bash b3
   osim p
 
 
@@ -48,7 +71,6 @@ data BashProg
   = B_Empty
   | B_Invoke [Redirect] Exe
   | B_Seq BashProg BashProg
- -- TODO: support: backgrounding, pipe & input redirects
 
 data Redirect
   = RedirectO FDI RedirectTarget
@@ -57,23 +79,36 @@ newtype FDI = FDI Int deriving (Eq,Ord,Num,Show) -- File descriptor index
 
 data RedirectTarget
   = FdiReference FDI
-  -- TODO: redirect to file
 
 data Exe
   = BinEcho String -- String is command line arg
   | BinBash BashProg
+  | BinRev
 
 
 runX :: Exe -> OsProg
 runX = \case
   BinEcho text -> echo text
   BinBash bprog -> bash bprog
+  BinRev -> revLines
 
 
 echo :: String -> OsProg
 echo text = do
-  OS_GetStdout $ \stdout ->
+  OS_GetEnv $ \OsProgEnv{stdout} ->
     OS_Write stdout text OS_Stop
+
+
+revLines :: OsProg
+revLines = do
+  OS_GetEnv $ \OsProgEnv{stdin,stdout} -> do
+    let
+      loop = do
+        OS_Read stdin $ \case
+          Nothing -> OS_Stop
+          Just line -> do
+            OS_Write stdout (reverse line) loop
+    loop
 
 
 bash :: BashProg -> OsProg
@@ -93,26 +128,26 @@ bash = loop OS_Stop
         loop (loop k p2) p1
 
 
-type FdiMap = Map FDI Ofd
+type FdiMap = Map FDI FD
 
 myInitialFdiMap :: (FdiMap -> OsProg) -> OsProg
 myInitialFdiMap k = do
-  OS_GetStdout $ \stdout -> do
-    OS_GetStderr $ \stderr -> do
-      k (Map.fromList [ (1,stdout), (2,stderr) ])
+  OS_GetEnv $ \OsProgEnv{stdin,stdout,stderr} -> do
+    k (Map.fromList [ (0,stdin), (1,stdout), (2,stderr) ])
 
 evalRedirects :: FdiMap -> [Redirect] -> OsProgEnv
 evalRedirects fm = \case
   [] ->
     OsProgEnv
-    { stdout = look "evalRedirects" 1 fm
+    { stdin = look "evalRedirects" 0 fm
+    , stdout = look "evalRedirects" 1 fm
     , stderr = look "evalRedirects" 2 fm
     }
   RedirectO left right : moreRedirects -> do
     let fm' = Map.insert left (evalRedirectTarget fm right) fm
     evalRedirects fm' moreRedirects
 
-evalRedirectTarget :: FdiMap -> RedirectTarget -> Ofd
+evalRedirectTarget :: FdiMap -> RedirectTarget -> FD
 evalRedirectTarget fm = \case
   FdiReference fdi -> look "evalRedirectTarget" fdi fm
 
@@ -121,42 +156,47 @@ data OsProg
   = OS_Stop
 --  | OS_Exec / OS_Fork
   | OS_Invoke OsProgEnv OsProg OsProg
-  | OS_GetStdout (Ofd -> OsProg)
-  | OS_GetStderr (Ofd -> OsProg)
-  | OS_Write Ofd String OsProg
+  | OS_GetEnv (OsProgEnv -> OsProg)
+  | OS_Read FD (Maybe String -> OsProg)
+  | OS_Write FD String OsProg
   -- TODO: reading from input file descriptors
 
 data OsProgEnv = OsProgEnv
-  { stdout :: Ofd
-  , stderr :: Ofd
+  { stdin :: FD
+  , stdout :: FD
+  , stderr :: FD
   }
 
-type OEnv = Map Ofd OTarget
-data OTarget = OutConsole | ErrConsole -- TODO: | FileAppend | Pipe ...
-
-newtype Ofd = -- output file descriptor
-  Ofd Int deriving (Eq,Ord,Num,Show)
+newtype FD = FD Int deriving (Eq,Ord,Num,Show) -- file descriptor
 
 -- TODO: input file descriptor
 
 
 data OsState = OsState
-  { oenv :: OEnv
+  { fdMap :: FdMap
   , callers :: [(OsProgEnv,OsProg)]
   -- TODO: file system!
+  -- TODO: multiple processes!
+  , consoleInputRemaining :: [String]
   }
+
+
+type FdMap = Map FD EndPoint
+data EndPoint = InConsole | OutConsole | ErrConsole -- TODO: files and pipes
+
 
 osim :: OsProg -> IO ()
 osim = loop initProgEnv initOsState
   where
 
     initProgEnv :: OsProgEnv
-    initProgEnv = OsProgEnv { stdout = 100, stderr = 101 }
+    initProgEnv = OsProgEnv { stdin = 99, stdout = 100, stderr = 101 }
 
     initOsState :: OsState
     initOsState = OsState
-      { oenv = Map.fromList [ (100,OutConsole), (101,ErrConsole) ]
+      { fdMap = Map.fromList [ (99,InConsole), (100,OutConsole), (101,ErrConsole) ]
       , callers = []
+      , consoleInputRemaining = ["one","two","three"]
       }
 
     loop :: OsProgEnv -> OsState -> OsProg -> IO ()
@@ -173,23 +213,37 @@ osim = loop initProgEnv initOsState
         let state' = state { callers = (env,suspended) : callers state }
         loop env' state' prog
 
-      OS_GetStdout f -> do
-        let OsProgEnv{stdout} = env
-        loop env state (f stdout)
+      OS_GetEnv f -> do
+        loop env state (f env)
 
-      OS_GetStderr f -> do
-        let OsProgEnv{stderr} = env
-        loop env state (f stderr)
+      OS_Read fd f -> do
+        let OsState{fdMap} = state
+        let endPoint = look "OS_Read" fd fdMap
+        let (state',textMaybe) = readTarget state endPoint
+        loop env state' (f textMaybe)
 
-      OS_Write ofd text prog -> do
-        let OsState{oenv} = state
-        let otarget = look "OS_Write" ofd oenv
-        writeTarget text otarget
+      OS_Write fd text prog -> do
+        let OsState{fdMap} = state
+        let endPoint = look "OS_Write" fd fdMap
+        writeTarget text endPoint
         loop env state prog
 
 
-writeTarget :: String -> OTarget -> IO ()
+readTarget :: OsState -> EndPoint -> (OsState, Maybe String)
+readTarget state = \case
+  OutConsole{} -> undefined -- TODO: report as error, or just return Nothing ?
+  ErrConsole{} -> undefined
+  InConsole -> do
+    let OsState{consoleInputRemaining=xs} = state
+    case xs of
+      [] -> (state,Nothing)
+      line:xs' -> (state { consoleInputRemaining = xs' }, Just line)
+
+
+writeTarget :: String -> EndPoint -> IO ()
 writeTarget str = \case
+  InConsole ->
+    undefined -- TODO: report as error, orjust do nothing
   OutConsole ->
     putStrLn $ "*out* : " ++ str
   ErrConsole ->
